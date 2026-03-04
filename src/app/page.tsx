@@ -83,7 +83,9 @@ export default function Home() {
   // Load config: localStorage first, fallback to server config for migration
   useEffect(() => {
     const stored = loadConfigFromStorage();
-    const hasLocalData = Object.values(stored.buttons).some(b => b.action.type !== 'none');
+    const hasLocalData = Object.values(stored.buttons).some(
+      b => b.action.type !== 'none' || b.color.r !== 0 || b.color.g !== 0 || b.color.b !== 0 || b.label !== ''
+    );
 
     if (hasLocalData) {
       setConfig(stored);

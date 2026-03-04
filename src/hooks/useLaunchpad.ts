@@ -126,6 +126,9 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
         }
       }
 
+      // Wait for device to enter Programmer Mode before sending LED commands
+      await new Promise(resolve => setTimeout(resolve, 100));
+
       // Listen on ALL inputs
       for (const input of matchedInputs) {
         input.onmidimessage = handleMIDIMessage;
