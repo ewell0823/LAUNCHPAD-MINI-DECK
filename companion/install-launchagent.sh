@@ -4,11 +4,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVER_PATH="$SCRIPT_DIR/server.mjs"
+APP_DIR="$SCRIPT_DIR/LaunchpadCompanion.app"
+APP_EXEC="$APP_DIR/Contents/MacOS/run"
+RESOURCES_DIR="$APP_DIR/Contents/Resources"
 PLIST_NAME="com.launchpad-editor.companion"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
 LOG_DIR="$HOME/Library/Logs/launchpad-companion"
-NODE_PATH="$(which node)"
+
+# Copy latest server.mjs into .app bundle
+mkdir -p "$RESOURCES_DIR"
+cp "$SCRIPT_DIR/server.mjs" "$RESOURCES_DIR/server.mjs"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 mkdir -p "$LOG_DIR"
@@ -22,8 +27,7 @@ cat > "$PLIST_PATH" <<EOF
     <string>$PLIST_NAME</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$NODE_PATH</string>
-        <string>$SERVER_PATH</string>
+        <string>$APP_EXEC</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -42,8 +46,11 @@ launchctl unload "$PLIST_PATH" 2>/dev/null || true
 launchctl load "$PLIST_PATH"
 
 echo "Installed and started LaunchAgent: $PLIST_NAME"
-echo "  Server: $SERVER_PATH"
-echo "  Logs:   $LOG_DIR/"
+echo "  App:  $APP_DIR"
+echo "  Logs: $LOG_DIR/"
 echo ""
 echo "The companion server will now auto-start on login."
+echo ""
+echo "IMPORTANT: Add 'LaunchpadCompanion' to:"
+echo "  System Settings > Privacy & Security > Accessibility"
 echo "To uninstall: bash $SCRIPT_DIR/uninstall-launchagent.sh"

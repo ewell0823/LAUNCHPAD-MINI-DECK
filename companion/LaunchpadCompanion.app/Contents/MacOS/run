@@ -1,0 +1,3 @@
+#!/bin/bash
+RESOURCES_DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
+exec /usr/local/bin/node "$RESOURCES_DIR/server.mjs"
