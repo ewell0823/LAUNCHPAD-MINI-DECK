@@ -10,6 +10,7 @@ interface ActionEditorProps {
   config: ButtonConfig;
   onChange: (config: ButtonConfig) => void;
   onTest: () => void;
+  companionAvailable: boolean;
 }
 
 interface AppInfo {
@@ -113,10 +114,12 @@ function AppSelector({
   appPath,
   appName,
   onChange,
+  companionAvailable,
 }: {
   appPath: string;
   appName: string;
   onChange: (path: string, name: string) => void;
+  companionAvailable: boolean;
 }) {
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [search, setSearch] = useState('');
@@ -130,7 +133,8 @@ function AppSelector({
     }
     setLoading(true);
     try {
-      const res = await fetch('/api/apps');
+      const url = companionAvailable ? 'http://127.0.0.1:19191/apps' : '/api/apps';
+      const res = await fetch(url);
       const data = await res.json();
       setApps(data.apps || []);
       setShowList(true);
@@ -139,7 +143,7 @@ function AppSelector({
     } finally {
       setLoading(false);
     }
-  }, [apps.length]);
+  }, [apps.length, companionAvailable]);
 
   const filtered = apps.filter(app =>
     app.name.toLowerCase().includes(search.toLowerCase())
@@ -203,7 +207,7 @@ function AppSelector({
   );
 }
 
-export default function ActionEditor({ note, config, onChange, onTest }: ActionEditorProps) {
+export default function ActionEditor({ note, config, onChange, onTest, companionAvailable }: ActionEditorProps) {
   const updateAction = (action: Action) => {
     onChange({ ...config, action });
   };
@@ -313,6 +317,7 @@ export default function ActionEditor({ note, config, onChange, onTest }: ActionE
             onChange={(appPath, appName) =>
               updateAction({ type: 'app_launch', appPath, appName })
             }
+            companionAvailable={companionAvailable}
           />
         )}
 

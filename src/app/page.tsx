@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useLaunchpad } from '@/hooks/useLaunchpad';
+import { useCompanion } from '@/hooks/useCompanion';
+import { companionExecute } from '@/lib/companion';
 import LaunchpadGrid from '@/components/LaunchpadGrid';
 import ActionEditor from '@/components/ActionEditor';
 import {
@@ -47,17 +49,37 @@ export default function Home() {
   const configRef = useRef(config);
   configRef.current = config;
 
+  const companion = useCompanion();
+  const companionRef = useRef(companion.available);
+  companionRef.current = companion.available;
+
   // Execute the action for a button
   const executeAction = useCallback((note: number) => {
     const buttonConfig = configRef.current.buttons[String(note)];
-    if (buttonConfig && buttonConfig.action.type !== 'none') {
+    if (!buttonConfig || buttonConfig.action.type === 'none') return;
+
+    // open_url can be handled client-side
+    if (buttonConfig.action.type === 'open_url') {
+      window.open(buttonConfig.action.url, '_blank');
+      return;
+    }
+
+    // Try companion server first (works from Vercel), fallback to Next.js API
+    if (companionRef.current) {
+      companionExecute(buttonConfig.action).catch(() => {
+        // Companion failed, try Next.js API fallback
+        fetch('/api/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: buttonConfig.action }),
+        }).catch(() => {});
+      });
+    } else {
       fetch('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: buttonConfig.action }),
-      }).catch(() => {
-        // API not available (e.g. deployed on Vercel) — ignore
-      });
+      }).catch(() => {});
     }
   }, []);
 
@@ -247,6 +269,18 @@ export default function Home() {
             </button>
           </div>
 
+          {/* Companion Server Status */}
+          <div className="flex items-center gap-1.5">
+            <span className={`status-dot ${
+              companion.available ? 'connected' :
+              companion.checking ? 'connecting' : 'disconnected'
+            }`} />
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {companion.available ? 'Local' :
+               companion.checking ? 'Checking...' : 'Local offline'}
+            </span>
+          </div>
+
           {/* Connection */}
           <div className="flex items-center gap-2">
             <span className={`status-dot ${
@@ -316,6 +350,7 @@ export default function Home() {
               config={selectedConfig}
               onChange={(newConfig) => handleButtonChange(selectedNote, newConfig)}
               onTest={() => executeAction(selectedNote)}
+              companionAvailable={companion.available}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-center gap-3">

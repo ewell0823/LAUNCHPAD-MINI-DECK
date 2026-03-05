@@ -6,7 +6,8 @@
     "dev": "next dev --port 3456",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "companion": "node companion/server.mjs"
   },
   "dependencies": {
     "next": "16.1.6",
