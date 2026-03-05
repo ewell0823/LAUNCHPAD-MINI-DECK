@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "companion": "node companion/server.mjs"
+    "companion": "node companion/server.mjs",
+    "companion:install": "bash companion/install-launchagent.sh",
+    "companion:uninstall": "bash companion/uninstall-launchagent.sh"
   },
   "dependencies": {
     "next": "16.1.6",
