@@ -58,27 +58,37 @@ export default function Home() {
     const buttonConfig = configRef.current.buttons[String(note)];
     if (!buttonConfig || buttonConfig.action.type === 'none') return;
 
-    // open_url can be handled client-side
-    if (buttonConfig.action.type === 'open_url') {
-      window.open(buttonConfig.action.url, '_blank');
+    const action = buttonConfig.action;
+
+    // For open_url: prefer the companion (which uses `open URL` so it
+    // launches the OS default browser). Fall back to window.open only if
+    // the companion is unavailable — that opens in the current browser.
+    if (action.type === 'open_url') {
+      if (companionRef.current) {
+        companionExecute(action).catch(() => {
+          window.open(action.url, '_blank');
+        });
+      } else {
+        window.open(action.url, '_blank');
+      }
       return;
     }
 
     // Try companion server first (works from Vercel), fallback to Next.js API
     if (companionRef.current) {
-      companionExecute(buttonConfig.action).catch(() => {
+      companionExecute(action).catch(() => {
         // Companion failed, try Next.js API fallback
         fetch('/api/execute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: buttonConfig.action }),
+          body: JSON.stringify({ action }),
         }).catch(() => {});
       });
     } else {
       fetch('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: buttonConfig.action }),
+        body: JSON.stringify({ action }),
       }).catch(() => {});
     }
   }, []);
