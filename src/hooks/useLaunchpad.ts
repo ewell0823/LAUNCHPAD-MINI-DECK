@@ -12,6 +12,35 @@ const DEVICE_SEARCH_NAMES = [
   'LPX MIDI',
 ];
 
+// Module-level singleton: requestMIDIAccess should only be called once per page.
+let midiAccessPromise: Promise<MIDIAccess> | null = null;
+
+function getMIDIAccess(): Promise<MIDIAccess> {
+  if (typeof navigator === 'undefined' || !navigator.requestMIDIAccess) {
+    return Promise.reject(new Error('Web MIDI API not supported. Use Chrome or Edge.'));
+  }
+  if (!midiAccessPromise) {
+    midiAccessPromise = navigator.requestMIDIAccess({ sysex: true });
+    midiAccessPromise.catch(() => {
+      midiAccessPromise = null;
+    });
+  }
+  return midiAccessPromise;
+}
+
+async function isMIDIPermissionGranted(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !navigator.permissions) return false;
+  try {
+    const status = await navigator.permissions.query({
+      name: 'midi',
+      sysex: true,
+    } as unknown as PermissionDescriptor);
+    return status.state === 'granted';
+  } catch {
+    return false;
+  }
+}
+
 export interface LaunchpadState {
   connected: boolean;
   deviceName: string | null;
@@ -44,6 +73,9 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
 
+  const accessRef = useRef<MIDIAccess | null>(null);
+  const stateChangeListenerRef = useRef<((e: Event) => void) | null>(null);
+
   const handleMIDIMessage = useCallback((event: MIDIMessageEvent) => {
     const data = event.data;
     if (!data || data.length < 3) return;
@@ -68,17 +100,118 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
     }
   }, []);
 
+  // Find Launchpad ports in the MIDIAccess, send Programmer Mode, attach
+  // input handlers. Returns true if a Launchpad was found and attached.
+  const attachToPorts = useCallback((midiAccess: MIDIAccess): boolean => {
+    const matchedInputs: MIDIInput[] = [];
+    const matchedOutputs: MIDIOutput[] = [];
+    let deviceName: string | null = null;
+
+    for (const [, port] of midiAccess.inputs) {
+      if (matchesDevice(port.name)) {
+        matchedInputs.push(port);
+        if (!deviceName) deviceName = port.name;
+      }
+    }
+    for (const [, port] of midiAccess.outputs) {
+      if (matchesDevice(port.name)) {
+        matchedOutputs.push(port);
+      }
+    }
+
+    if (matchedInputs.length === 0 || matchedOutputs.length === 0) {
+      return false;
+    }
+
+    // Detach previous handlers — after a sleep/reconnect cycle the port
+    // objects we held are dead, so always rebind.
+    for (const input of inputsRef.current) {
+      input.onmidimessage = null;
+    }
+
+    inputsRef.current = matchedInputs;
+    outputsRef.current = matchedOutputs;
+
+    const sysexProgrammerMode = new Uint8Array([...SYSEX_HEADER, 0x0e, 0x01, ...SYSEX_END]);
+    for (const output of matchedOutputs) {
+      try {
+        output.send(sysexProgrammerMode);
+        console.log(`[MIDI] Sent programmer mode to: "${output.name}"`);
+      } catch (e) {
+        console.warn(`[MIDI] Failed to send programmer mode to "${output.name}":`, e);
+      }
+    }
+
+    for (const input of matchedInputs) {
+      input.onmidimessage = handleMIDIMessage;
+      console.log(`[MIDI] Listening on: "${input.name}"`);
+    }
+
+    setState({
+      connected: true,
+      deviceName: deviceName || 'Launchpad Mini MK3',
+      connecting: false,
+      error: null,
+      supported: true,
+    });
+    return true;
+  }, [handleMIDIMessage]);
+
+  const markDisconnected = useCallback(() => {
+    for (const input of inputsRef.current) {
+      input.onmidimessage = null;
+    }
+    inputsRef.current = [];
+    outputsRef.current = [];
+    setState(s => ({
+      ...s,
+      connected: false,
+      deviceName: null,
+      connecting: false,
+    }));
+  }, []);
+
+  // Wire up MIDIAccess.statechange so the UI auto-reattaches when the
+  // Launchpad returns after Mac sleep (or USB replug) and goes offline
+  // when it disappears.
+  const ensureStateChangeListener = useCallback((midiAccess: MIDIAccess) => {
+    if (accessRef.current === midiAccess && stateChangeListenerRef.current) return;
+
+    if (accessRef.current && stateChangeListenerRef.current) {
+      accessRef.current.removeEventListener(
+        'statechange',
+        stateChangeListenerRef.current as EventListener,
+      );
+    }
+
+    const listener = (e: Event) => {
+      const event = e as MIDIConnectionEvent;
+      const port = event.port;
+      if (!matchesDevice(port?.name ?? null)) return;
+
+      console.log(`[MIDI] statechange: "${port?.name}" -> ${port?.state}`);
+
+      if (port?.state === 'connected') {
+        attachToPorts(midiAccess);
+      } else if (port?.state === 'disconnected') {
+        // Another matching port may still be live; re-scan first.
+        if (!attachToPorts(midiAccess)) {
+          markDisconnected();
+        }
+      }
+    };
+
+    midiAccess.addEventListener('statechange', listener);
+    accessRef.current = midiAccess;
+    stateChangeListenerRef.current = listener;
+  }, [attachToPorts, markDisconnected]);
+
   const connect = useCallback(async () => {
     setState(s => ({ ...s, connecting: true, error: null }));
 
     try {
-      if (!navigator.requestMIDIAccess) {
-        throw new Error('Web MIDI API not supported. Use Chrome or Edge.');
-      }
+      const midiAccess = await getMIDIAccess();
 
-      const midiAccess = await navigator.requestMIDIAccess({ sysex: true });
-
-      // Log all available MIDI ports
       console.log('[MIDI] Available inputs:');
       for (const [id, port] of midiAccess.inputs) {
         console.log(`  - ${id}: "${port.name}" (${port.manufacturer})`);
@@ -88,60 +221,11 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
         console.log(`  - ${id}: "${port.name}" (${port.manufacturer})`);
       }
 
-      // Collect ALL matching inputs and outputs
-      const matchedInputs: MIDIInput[] = [];
-      const matchedOutputs: MIDIOutput[] = [];
-      let deviceName: string | null = null;
+      ensureStateChangeListener(midiAccess);
 
-      for (const [, port] of midiAccess.inputs) {
-        if (matchesDevice(port.name)) {
-          matchedInputs.push(port);
-          if (!deviceName) deviceName = port.name;
-          console.log(`[MIDI] Matched input: "${port.name}"`);
-        }
-      }
-
-      for (const [, port] of midiAccess.outputs) {
-        if (matchesDevice(port.name)) {
-          matchedOutputs.push(port);
-          console.log(`[MIDI] Matched output: "${port.name}"`);
-        }
-      }
-
-      if (matchedInputs.length === 0 || matchedOutputs.length === 0) {
+      if (!attachToPorts(midiAccess)) {
         throw new Error('Launchpad Mini MK3 not found. Connect the device and retry.');
       }
-
-      inputsRef.current = matchedInputs;
-      outputsRef.current = matchedOutputs;
-
-      // Enter Programmer Mode on ALL outputs
-      const sysexProgrammerMode = new Uint8Array([...SYSEX_HEADER, 0x0e, 0x01, ...SYSEX_END]);
-      for (const output of matchedOutputs) {
-        try {
-          output.send(sysexProgrammerMode);
-          console.log(`[MIDI] Sent programmer mode to: "${output.name}"`);
-        } catch (e) {
-          console.warn(`[MIDI] Failed to send programmer mode to "${output.name}":`, e);
-        }
-      }
-
-      // Wait for device to enter Programmer Mode before sending LED commands
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Listen on ALL inputs
-      for (const input of matchedInputs) {
-        input.onmidimessage = handleMIDIMessage;
-        console.log(`[MIDI] Listening on: "${input.name}"`);
-      }
-
-      setState({
-        connected: true,
-        deviceName: deviceName || 'Launchpad Mini MK3',
-        connecting: false,
-        error: null,
-        supported: true,
-      });
     } catch (err) {
       setState(s => ({
         ...s,
@@ -151,7 +235,7 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
         error: err instanceof Error ? err.message : 'Connection failed',
       }));
     }
-  }, [handleMIDIMessage]);
+  }, [attachToPorts, ensureStateChangeListener]);
 
   const disconnect = useCallback(() => {
     for (const input of inputsRef.current) {
@@ -205,6 +289,38 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
     }
   }, []);
 
+  // Auto-connect on mount when MIDI permission is already granted.
+  // First-time users still need to click Connect (the permission prompt
+  // requires a user gesture).
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const granted = await isMIDIPermissionGranted();
+      if (cancelled || !granted) return;
+
+      setState(s => (s.connected ? s : { ...s, connecting: true }));
+      try {
+        const midiAccess = await getMIDIAccess();
+        if (cancelled) return;
+        ensureStateChangeListener(midiAccess);
+        if (!attachToPorts(midiAccess)) {
+          // Permission ok, but Launchpad not currently plugged in.
+          // statechange will re-attach when it appears.
+          setState(s => ({ ...s, connecting: false }));
+        }
+      } catch {
+        if (!cancelled) {
+          setState(s => ({ ...s, connecting: false }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attachToPorts, ensureStateChangeListener]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -218,6 +334,14 @@ export function useLaunchpad(callbacks: LaunchpadCallbacks = {}) {
         } catch {
           // Ignore
         }
+      }
+      if (accessRef.current && stateChangeListenerRef.current) {
+        accessRef.current.removeEventListener(
+          'statechange',
+          stateChangeListenerRef.current as EventListener,
+        );
+        accessRef.current = null;
+        stateChangeListenerRef.current = null;
       }
     };
   }, []);
